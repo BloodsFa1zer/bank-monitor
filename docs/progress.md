@@ -7,7 +7,7 @@
 | Етап | Назва | Статус | Дата | Коміт |
 |---|---|---|---|---|
 | S0 | Каркас репозиторію | done | 2026-11-12 | `c7abf61` |
-| S1 | PostgreSQL: схема, сід, ролі | — | | |
+| S1 | PostgreSQL: схема, сід, ролі | done | 2026-11-12 | `c8e78de` |
 | S2 | RabbitMQ і worker | — | | |
 | S3 | Generator, сценарії, сторінка керування | — | | |
 | S4 | Авторизація і gateway | — | | |
@@ -49,3 +49,20 @@ _Один запис на кожен запуск етапу, нові — в к
   - `scripts/check_images.sh` перевіряє не лише існування образу, а й збірку під архітектуру Docker-хоста (тут `arm64`); прогін триває близько двох хвилин.
   - `scripts/check_ports.sh` перевірено і на порушнику: контейнер-пустушка з міткою проєкту й опублікованим портом дає `PORTS FAIL`, така сама з міткою `gateway` — `PORTS OK`. У dev-режимі скрипт свідомо падає.
   - `make fmt` запускає образ `bankmon-tests` напряму з томом на запис і від імені користувача хоста.
+
+### S1 — PostgreSQL: схема, сід, ролі · 2026-11-12
+- **Результат:** done
+- **AC:** S1-AC1 ✅ · S1-AC2 ✅ · S1-AC3 ✅ · S1-AC4 ✅ · S1-AC5 ✅ · S1-AC6 ✅ · S1-AC7 ✅
+- **Зміни:** `db/init/01-schema.sql`, `02-seed.sql`, `03-roles.sh`; сервіс `postgres` і підключення тестів до БД у `docker-compose.yml`; dev-порт у `docker-compose.dev.yml`; `tests/e2e/helpers.py` (`db`, `check_invariants`), `conftest.py` (очікування готовності), `test_s01_db.py` (43 тести).
+- **Відхилення від плану:** dev-порт PostgreSQL — `127.0.0.1:15432` за схваленим запитом 1. `check_invariants` має необовʼязковий параметр `conn`: так тест доводить, що перевірка справді ловить порушення I1, I2, I4 усередині транзакції, яку потім відкочено.
+- **Нотатки:**
+  - Версія пакета (PyPI, 2026-11-12): `psycopg[binary]==3.3.8`. Сервісам S2–S3 брати саме її.
+  - Для колонок `GENERATED ALWAYS AS IDENTITY` ролі `bank_app` не потрібне право на послідовність — `INSERT` в `accounts` від її імені проходить (тест `test_s01_ac4_app_reads_and_writes_all_tables`).
+  - У PostgreSQL 15+ у PUBLIC уже немає права `CREATE` на схему `public`, тому `CREATE TABLE` від `bank_app` забороняється без окремого `REVOKE` (`permission denied for schema public`).
+  - psycopg 3 передає параметри окремо від тексту запиту, тож у `pg_stat_activity.query` видно `$1`, а не значення. Якщо тест шукає свій запит у `pg_stat_activity`, маркер треба вписувати в сам текст SQL.
+  - `check_invariants()` без аргументу працює в окремому зʼєднанні з рівнем REPEATABLE READ — усі чотири перевірки бачать один знімок навіть під навантаженням.
+  - Healthcheck має `start_interval: 1s`: після `make clean && make up` контейнер стає `healthy` приблизно за 2 с.
+  - Префікс логу працює: рядки мають вигляд `2026-11-11 23:46:57.331 UTC [1] bank_app@bank ERROR: …` — на це спиратимуться запити Loki в S7.
+  - У базовому режимі `docker compose port postgres 5432` друкує `invalid IP:0` з кодом 0 — так compose повідомляє, що порт не опубліковано. Доказ для R7 — `make check-ports` → `PORTS OK`.
+  - `make check-ports` у dev-режимі свідомо падає (`postgres: 127.0.0.1:15432->5432/tcp`).
+  - `make e2e` тричі поспіль: 47 passed щоразу; після `docker compose restart postgres` одразу `make e2e K=s01` → 43 passed (фікстура дочікується бази).
