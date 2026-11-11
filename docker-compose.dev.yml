@@ -1,0 +1,6 @@
+# Development overlay: publishes service ports on 127.0.0.1 only, for debugging.
+# Used by `make up-dev`. Each stage adds its services here, for example:
+#
+#   postgres:
+#     ports: ["127.0.0.1:5432:5432"]
+services: {}
