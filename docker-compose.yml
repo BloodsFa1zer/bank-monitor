@@ -1,0 +1,19 @@
+# BankMonitor stack. Only the gateway publishes a port on the host (rule R7);
+# extra ports for debugging live in docker-compose.dev.yml.
+name: bankmon
+
+services:
+  # Test runner: lint, unit and e2e tests run here, the code comes in via the volume.
+  # Started only on demand: make lint / make unit / make e2e.
+  tests:
+    build:
+      context: .
+      dockerfile: tests/Dockerfile
+    profiles: ["test"]
+    env_file: .env
+    environment:
+      PYTHONPATH: /repo/services/common:/repo/services/worker:/repo/services/generator:/repo/services/auth:/repo
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - .:/repo:ro
+    working_dir: /repo
