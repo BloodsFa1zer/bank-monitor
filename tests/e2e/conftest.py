@@ -18,6 +18,7 @@ from .helpers import (
     GENERATOR_URL,
     LOKI_URL,
     PROM_URL,
+    TEMPO_URL,
     WORKER_URL,
     control_get,
     control_put,
@@ -75,6 +76,11 @@ def _worker_logs_in_loki() -> bool:
     return bool(loki_query('{service="worker"}', since_s=60, limit=1))
 
 
+def _tempo_ready() -> bool:
+    requests.get(f"{TEMPO_URL}/ready", timeout=3).raise_for_status()
+    return True
+
+
 def reset_generator(only_if_needed: bool = False) -> None:
     """Back to the normal scenario, default rate, running.
 
@@ -97,6 +103,7 @@ def stack_ready() -> Iterator[None]:
     wait_until(_prometheus_ready, timeout=180, interval=1, desc="Prometheus to be ready")
     wait_until(_grafana_ready, timeout=180, interval=1, desc="Grafana to be ready")
     wait_until(_loki_ready, timeout=180, interval=2, desc="Loki to be ready")
+    wait_until(_tempo_ready, timeout=180, interval=2, desc="Tempo to be ready")
     wait_until(_worker_logs_in_loki, timeout=180, interval=2, desc="worker logs to reach Loki")
     reset_generator(only_if_needed=True)
     yield
