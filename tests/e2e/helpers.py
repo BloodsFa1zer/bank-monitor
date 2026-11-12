@@ -365,3 +365,45 @@ def sample_for[T](fn: Callable[[], T], duration_s: float, interval_s: float = 1.
         samples.append(fn())
         time.sleep(interval_s)
     return samples
+
+
+# --- Gateway and auth (S4) ---------------------------------------------------
+
+GATEWAY_URL = os.environ.get("GATEWAY_URL", "http://gateway:8080")
+AUTH_URL = os.environ.get("AUTH_URL", "http://auth:8000")
+ADMIN = (os.environ.get("AUTH_ADMIN_USER", "admin"), os.environ.get("AUTH_ADMIN_PASSWORD", ""))
+VIEWER = (os.environ.get("AUTH_VIEWER_USER", "viewer"), os.environ.get("AUTH_VIEWER_PASSWORD", ""))
+
+
+class GatewaySession(requests.Session):
+    """A browser-like session against the gateway: relative paths, redirects not followed."""
+
+    def request(self, method, url, *args, **kwargs):
+        kwargs.setdefault("allow_redirects", False)
+        kwargs.setdefault("timeout", 10)
+        if url.startswith("/"):
+            url = GATEWAY_URL + url
+        return super().request(method, url, *args, **kwargs)
+
+    def get(self, url, **kwargs):
+        # requests.Session.get passes allow_redirects=True itself; keep our default.
+        kwargs.setdefault("allow_redirects", False)
+        return self.request("GET", url, **kwargs)
+
+
+def gateway() -> GatewaySession:
+    return GatewaySession()
+
+
+def login(username: str, password: str) -> GatewaySession:
+    """A session that went through the login form; it carries the bank_session cookie."""
+    session = gateway()
+    response = session.post("/auth/login", data={"username": username, "password": password})
+    assert response.status_code == 303, (response.status_code, response.text[:200])
+    return session
+
+
+def token(username: str, password: str) -> str:
+    response = gateway().post("/auth/token", json={"username": username, "password": password})
+    response.raise_for_status()
+    return response.json()["access_token"]

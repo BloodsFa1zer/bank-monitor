@@ -13,6 +13,8 @@ import requests
 from bankmon_common import amqp
 
 from .helpers import (
+    AUTH_URL,
+    GATEWAY_URL,
     GENERATOR_URL,
     WORKER_URL,
     control_get,
@@ -43,6 +45,12 @@ def _generator_healthy() -> bool:
     return True
 
 
+def _gateway_and_auth_healthy() -> bool:
+    requests.get(f"{AUTH_URL}/healthz", timeout=3).raise_for_status()
+    requests.get(f"{GATEWAY_URL}/healthz", timeout=3).raise_for_status()
+    return True
+
+
 def reset_generator(only_if_needed: bool = False) -> None:
     """Back to the normal scenario, default rate, running.
 
@@ -61,6 +69,7 @@ def stack_ready() -> Iterator[None]:
     wait_until(_postgres_accepts_app, timeout=180, interval=1, desc="PostgreSQL to accept bank_app")
     wait_until(_worker_consuming, timeout=180, interval=1, desc="all worker consumers to attach")
     wait_until(_generator_healthy, timeout=180, interval=1, desc="the generator to answer")
+    wait_until(_gateway_and_auth_healthy, timeout=180, interval=1, desc="auth and the gateway")
     reset_generator(only_if_needed=True)
     yield
     reset_generator()
