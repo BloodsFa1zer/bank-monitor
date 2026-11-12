@@ -221,6 +221,7 @@ bank-monitor/
 | `postgres-exporter` | 9187 | `/metrics` | 9187 | S5 |
 | `prometheus` | 9090 | API та UI | 9090 | S5 |
 | `grafana` | 3000 | UI та API | 3000 | S6 |
+| `grafana-init` | — | одноразово робить `bank-overview` домашнім дашбордом і завершується | — | S6 |
 | `loki` | 3100 | API | 3100 | S7 |
 | `alloy` | 12345 | UI, `/metrics` | 12345 | S7 |
 | `tempo` | 3200, 4317 | API, OTLP gRPC | 3200 | S8 |

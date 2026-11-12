@@ -155,6 +155,7 @@ services:
     image: prometheuscommunity/postgres-exporter:v0.20.1
     command:
       - --collector.stat_statements
+      - --collector.stat_statements.include_query
     environment:
       # The monitoring role: pg_monitor plus SELECT on accounts, nothing else.
       DATA_SOURCE_NAME: postgresql://${MONITOR_DB_USER}:${MONITOR_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
@@ -194,6 +195,76 @@ services:
       start_interval: 1s
     restart: unless-stopped
 
+  grafana:
+    image: grafana/grafana:13.2.6
+    environment:
+      # Served by the gateway under /grafana/.
+      GF_SERVER_ROOT_URL: http://localhost:${GATEWAY_PORT:-8080}/grafana/
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+      # Who the user is comes only from the gateway (auth proxy); the role is synced
+      # from X-WEBAUTH-ROLE on every request.
+      GF_AUTH_PROXY_ENABLED: "true"
+      GF_AUTH_PROXY_HEADER_NAME: X-WEBAUTH-USER
+      GF_AUTH_PROXY_HEADER_PROPERTY: username
+      GF_AUTH_PROXY_AUTO_SIGN_UP: "true"
+      GF_AUTH_PROXY_HEADERS: Role:X-WEBAUTH-ROLE
+      GF_AUTH_PROXY_SYNC_TTL: "0"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_AUTH_SIGNOUT_REDIRECT_URL: /auth/logout
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Internal administrator: used by provisioning and by the tests inside the network.
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:?}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?}
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_LOG_MODE: console
+      GF_LOG_CONSOLE_FORMAT: json
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/grafana/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+      start_interval: 1s
+    restart: unless-stopped
+
+  # One-shot: makes bank-overview the home dashboard of the organisation. Grafana has
+  # no provisioning for preferences, and default_home_dashboard_path in Grafana 13
+  # serves a separate copy that viewers are not allowed to open.
+  grafana-init:
+    image: grafana/grafana:13.2.6
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        api=http://grafana:3000/grafana/api
+        auth="$$GF_SECURITY_ADMIN_USER:$$GF_SECURITY_ADMIN_PASSWORD"
+        for attempt in $$(seq 1 60); do
+          if curl -sf -u "$$auth" "$$api/dashboards/uid/bank-overview" > /dev/null &&
+             curl -sf -u "$$auth" -X PUT -H "Content-Type: application/json" \
+               -d '{"homeDashboardUID": "bank-overview"}' "$$api/org/preferences"; then
+            echo; echo "home dashboard set to bank-overview"; exit 0
+          fi
+          sleep 2
+        done
+        echo "could not set the home dashboard" >&2; exit 1
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:?}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?}
+    depends_on:
+      grafana:
+        condition: service_healthy
+    restart: "no"
+
   # The only service with a port on the host (rule R7).
   gateway:
     image: nginx:1.30.6-alpine
@@ -208,6 +279,11 @@ services:
         condition: service_healthy
       prometheus:
         condition: service_healthy
+      grafana:
+        condition: service_healthy
+      # A one-shot container: `up --wait` accepts its exit only through such a dependency (G17).
+      grafana-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 5s
@@ -239,6 +315,7 @@ services:
       GATEWAY_URL: http://gateway:8080
       AUTH_URL: http://auth:8000
       PROM_URL: http://prometheus:9090
+      GRAFANA_URL: http://grafana:3000/grafana
     volumes:
       - .:/repo:ro
     working_dir: /repo
@@ -253,3 +330,4 @@ volumes:
   rabbitmq_data:
   auth_data:
   prom_data:
+  grafana_data:

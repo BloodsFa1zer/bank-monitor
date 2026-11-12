@@ -21,6 +21,7 @@ from .helpers import (
     control_get,
     control_put,
     db,
+    grafana_api,
     metric_value,
     queue_counts,
     wait_queue_drained,
@@ -57,6 +58,11 @@ def _prometheus_ready() -> bool:
     return True
 
 
+def _grafana_ready() -> bool:
+    response = grafana_api("health")
+    return response.status_code == 200 and response.json().get("database") == "ok"
+
+
 def reset_generator(only_if_needed: bool = False) -> None:
     """Back to the normal scenario, default rate, running.
 
@@ -77,6 +83,7 @@ def stack_ready() -> Iterator[None]:
     wait_until(_generator_healthy, timeout=180, interval=1, desc="the generator to answer")
     wait_until(_gateway_and_auth_healthy, timeout=180, interval=1, desc="auth and the gateway")
     wait_until(_prometheus_ready, timeout=180, interval=1, desc="Prometheus to be ready")
+    wait_until(_grafana_ready, timeout=180, interval=1, desc="Grafana to be ready")
     reset_generator(only_if_needed=True)
     yield
     reset_generator()

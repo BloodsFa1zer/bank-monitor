@@ -1,0 +1,15 @@
+# Data sources of BankMonitor (docs/00-common.md §6.13). Read once at start:
+# after a change here restart the container (G23).
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 5s
+      httpMethod: POST

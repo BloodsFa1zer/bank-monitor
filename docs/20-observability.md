@@ -89,7 +89,7 @@ docker compose exec gateway nginx -t
    - форма входу вимкнена; вихід веде на `/auth/logout`; самореєстрація вимкнена; анонімний доступ вимкнений;
    - внутрішній адміністратор — `GF_SECURITY_ADMIN_USER` і `GF_SECURITY_ADMIN_PASSWORD` з `.env` (ним користуються лише тести зсередини мережі);
    - надсилання статистики й перевірка оновлень вимкнені;
-   - домашній дашборд — `bank-overview`.
+   - домашній дашборд — `bank-overview`. Його задає одноразовий сервіс `grafana-init` через API налаштувань організації (`PUT /api/org/preferences`), бо `default_home_dashboard_path` у Grafana 13 показує окрему копію, яку роль `Viewer` відкрити не може; `gateway` залежить від `grafana-init` з умовою `service_completed_successfully` (G17).
 2. **`datasources.yml`:** джерело `Prometheus`, uid `prometheus`, адреса `http://prometheus:9090`, типове, інтервал збору 5 с, без можливості редагування з UI.
 3. **`dashboards.yml`:** один постачальник типу «файл», тека «BankMonitor», редагування з UI й видалення заборонені, перечитування кожні 10 с.
 4. **Загальні правила дашбордів** (G19):
