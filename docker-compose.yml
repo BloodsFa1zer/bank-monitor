@@ -90,6 +90,38 @@ services:
     stop_grace_period: 15s
     restart: unless-stopped
 
+  generator:
+    build:
+      context: ./services
+      dockerfile: generator/Dockerfile
+    environment:
+      SERVICE_NAME: generator
+      LOG_LEVEL: info
+      DATABASE_URL: postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      MONITOR_DATABASE_URL: postgresql://${MONITOR_DB_USER}:${MONITOR_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AMQP_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/%2F
+      GEN_RATE: ${GEN_RATE:-20}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+      start_interval: 1s
+    stop_grace_period: 15s
+    restart: unless-stopped
+
   # Test runner: lint, unit and e2e tests run here, the code comes in via the volume.
   # Started only on demand: make lint / make unit / make e2e.
   # It must not depend on the worker: the outage tests run while the worker is stopped.
@@ -108,6 +140,7 @@ services:
       AMQP_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/%2F
       RABBITMQ_API: http://rabbitmq:15672
       WORKER_URL: http://worker:8000
+      GENERATOR_URL: http://generator:8000
     volumes:
       - .:/repo:ro
     working_dir: /repo

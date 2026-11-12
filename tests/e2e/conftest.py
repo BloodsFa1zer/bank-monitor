@@ -5,13 +5,26 @@ services by their names. Each stage adds the readiness checks it needs here.
 """
 
 import os
+from collections.abc import Callable, Iterator
 
 import pytest
 import requests
 
 from bankmon_common import amqp
 
-from .helpers import WORKER_URL, db, queue_counts, wait_until
+from .helpers import (
+    GENERATOR_URL,
+    WORKER_URL,
+    control_get,
+    control_put,
+    db,
+    metric_value,
+    queue_counts,
+    wait_queue_drained,
+    wait_until,
+)
+
+DEFAULT_STATE = {"scenario": "normal", "rate": float(os.environ["GEN_RATE"]), "running": True}
 
 
 def _postgres_accepts_app() -> bool:
@@ -25,8 +38,58 @@ def _worker_consuming() -> bool:
     return consumers == int(os.environ["WORKER_CONCURRENCY"])
 
 
+def _generator_healthy() -> bool:
+    requests.get(f"{GENERATOR_URL}/healthz", timeout=3).raise_for_status()
+    return True
+
+
+def reset_generator(only_if_needed: bool = False) -> None:
+    """Back to the normal scenario, default rate, running.
+
+    With only_if_needed the state is left alone when it already is the default, so a
+    freshly restarted generator can be checked as it came up (S3-AC12).
+    """
+    state = control_get()
+    is_default = all(state[key] == value for key, value in DEFAULT_STATE.items())
+    if not (only_if_needed and is_default and state["expires_at"] is None):
+        control_put(**DEFAULT_STATE)
+
+
 @pytest.fixture(scope="session", autouse=True)
-def stack_ready() -> None:
-    """Wait until the stack can serve the tests (after `make up` or a restart)."""
+def stack_ready() -> Iterator[None]:
+    """Wait until the stack can serve the tests; leave it in the normal scenario."""
     wait_until(_postgres_accepts_app, timeout=180, interval=1, desc="PostgreSQL to accept bank_app")
     wait_until(_worker_consuming, timeout=180, interval=1, desc="all worker consumers to attach")
+    wait_until(_generator_healthy, timeout=180, interval=1, desc="the generator to answer")
+    reset_generator(only_if_needed=True)
+    yield
+    reset_generator()
+
+
+@pytest.fixture
+def scenario() -> Iterator[Callable[..., dict]]:
+    """Switch scenarios during a test: ``scenario("deadlocks")``.
+
+    Afterwards: back to normal, and wait until the backlog the scenario built is processed.
+    """
+
+    def enable(name: str, **fields) -> dict:
+        return control_put(scenario=name, **fields)
+
+    yield enable
+    control_put(**DEFAULT_STATE)
+    wait_queue_drained(timeout=300)
+
+
+@pytest.fixture
+def paused_generator() -> Iterator[None]:
+    """No background load: generator paused, queue empty, worker idle."""
+    control_put(running=False)
+    wait_queue_drained()
+    wait_until(
+        lambda: metric_value(WORKER_URL, "bank_worker_in_flight") == 0,
+        timeout=30,
+        desc="the worker to finish its messages",
+    )
+    yield
+    control_put(running=True)

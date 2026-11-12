@@ -22,6 +22,7 @@ from bankmon_common import amqp
 from bankmon_common.messages import TransferRequested
 
 WORKER_URL = os.environ.get("WORKER_URL", "http://worker:8000")
+GENERATOR_URL = os.environ.get("GENERATOR_URL", "http://generator:8000")
 
 
 def wait_until[T](
@@ -291,14 +292,76 @@ def _set_scenario_state(
         conn.commit()
 
 
+# Each worker thread caches scenario_state for up to 1 s (§6.6) and re-reads it on its
+# next message. So a message processed more than 1 s after a change is guaranteed to
+# see the new settings, while a busy thread may still use the old ones before that.
+SETTINGS_CACHE_S = 1.0
+
+
+def wait_for_settings_refresh() -> None:
+    """Let every worker thread's settings cache expire after a change of scenario_state."""
+    time.sleep(SETTINGS_CACHE_S + 0.2)
+
+
 @contextmanager
 def worker_settings(lock_order: str, lock_gap_ms: int, sleep_ms: int) -> Iterator[None]:
-    """Change what the worker applies (it re-reads scenario_state within 1 s).
+    """Change what the worker applies; returns once every worker thread applies it.
 
     On exit the row always goes back to the values of the `normal` scenario.
     """
     _set_scenario_state(lock_order, lock_gap_ms, sleep_ms)
+    wait_for_settings_refresh()
     try:
         yield
     finally:
         _set_scenario_state("sorted", 0, 0, scenario="normal")
+        wait_for_settings_refresh()
+
+
+# --- Generator (S3) ----------------------------------------------------------
+
+CONTROL_STATE_URL = f"{GENERATOR_URL}/control/api/state"
+
+
+def control_get() -> dict:
+    response = requests.get(CONTROL_STATE_URL, timeout=5)
+    response.raise_for_status()
+    return response.json()
+
+
+def control_put(**fields) -> dict:
+    response = requests.put(CONTROL_STATE_URL, json=fields, timeout=10)
+    response.raise_for_status()
+    return response.json()
+
+
+def measurement_window(seconds: float) -> None:
+    """Let the system run for a fixed time to measure it (not waiting for a condition)."""
+    time.sleep(seconds)
+
+
+def counter_deltas(
+    url: str, name: str, label_sets: list[dict[str, str]], window_s: float
+) -> tuple[list[float], float]:
+    """How much each labelled series of a counter grows over a window; also the real window."""
+    before = [metric_value(url, name, labels) for labels in label_sets]
+    started = time.monotonic()
+    measurement_window(window_s)
+    after = [metric_value(url, name, labels) for labels in label_sets]
+    return [b - a for a, b in zip(before, after, strict=True)], time.monotonic() - started
+
+
+def rate_of(url: str, name: str, labels: dict[str, str] | None, window_s: float) -> float:
+    """Per-second growth of a counter over a window."""
+    (delta,), elapsed = counter_deltas(url, name, [labels or {}], window_s)
+    return delta / elapsed
+
+
+def sample_for[T](fn: Callable[[], T], duration_s: float, interval_s: float = 1.0) -> list[T]:
+    """Call fn every interval_s for duration_s; return what it returned."""
+    samples = []
+    deadline = time.monotonic() + duration_s
+    while time.monotonic() < deadline:
+        samples.append(fn())
+        time.sleep(interval_s)
+    return samples
