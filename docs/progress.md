@@ -9,7 +9,7 @@
 | S0 | Каркас репозиторію | done | 2026-11-12 | `c7abf61` |
 | S1 | PostgreSQL: схема, сід, ролі | done | 2026-11-12 | `c8e78de` |
 | S2 | RabbitMQ і worker | done | 2026-11-12 | `3a68305` |
-| S3 | Generator, сценарії, сторінка керування | — | | |
+| S3 | Generator, сценарії, сторінка керування | done | 2026-11-12 | `5aecd41` |
 | S4 | Авторизація і gateway | — | | |
 | S5 | Prometheus і метрики БД | — | | |
 | S6 | Grafana і дашборди | — | | |
@@ -90,3 +90,21 @@ _Один запис на кожен запуск етапу, нові — в к
   - Тест збою S2-AC11 — дві фази в `tests/outage/test_s02_redelivery.py`; спільний `transfer_id` передається змінною середовища, бо репозиторій у контейнері тільки для читання, а том `tests_state` з'явиться лише в S9:
     `id=$(uuidgen | tr A-Z a-z)`; `docker compose stop worker`; `docker compose --profile test run --rm -e S02_TRANSFER_ID=$id tests pytest tests/outage/test_s02_redelivery.py -k publish_while_down`; `docker compose start worker`; те саме з `-k processed_after_start`.
   - Заміри: S2-AC8 (40 зустрічних переказів у режимі naive) ≈ 26 с; після `restart rabbitmq` S2-AC2 зелений за 3 с, після `restart postgres` — за 2 с, `RestartCount` worker = 0; `docker compose stop worker` — 0,2 с, код 0; `scripts/check_json_logs.sh worker` → `JSON LOGS OK (worker, 200)`.
+
+### S3 — Generator, сценарії, сторінка керування · 2026-11-12
+- **Результат:** done
+- **AC:** S3-AC1 ✅ · S3-AC2 ✅ · S3-AC3 ✅ · S3-AC4 ✅ · S3-AC5 ✅ · S3-AC6 ✅ · S3-AC7 ✅ · S3-AC8 ✅ · S3-AC9 ✅ · S3-AC10 ✅ · S3-AC11 ✅ · S3-AC12 ✅ · S3-AC13 ✅ · S3-AC14 ✅ · S3-AC15 ✅ · S3-AC16 ✅
+- **Зміни:** `bankmon_common.http`; сервіс `services/generator` (`scenarios`, `state`, `engine`, `operations`, `probe`, `api`, `metrics`, `main`, `static/control.html`); сервіс `generator` у compose, `make scenario`, `scripts/scenario.sh`; юніт-тести сценаріїв, стану, API, темпу; `tests/e2e/test_s03_generator.py`; фікстури `scenario` і `paused_generator`.
+- **Відхилення від плану:** у `Scenario` додано поле `expected_alerts` — з нього сторінка керування показує очікувані алерти (§11), тож таблиця сценаріїв лишається єдиним джерелом.
+- **Нотатки:**
+  - Версії (PyPI, 2026-11-12): `fastapi==0.162.5`, `uvicorn==0.54.0`, `httpx==0.28.1` (тягне `starlette` 1.10). Starlette 1.10 попереджає, що `TestClient` на `httpx` застарів і радить `httpx2` — це лише попередження в юніт-тестах, пакета поза списком не додавав.
+  - `PUT /control/api/state` спершу перевіряє тіло, потім пише `scenario_state`, і лише тоді змінює стан у пам'яті: `200` означає, що worker отримає нові налаштування; база недоступна → `503`, нічого не змінено.
+  - Генератор переписує рядок `scenario_state` під час кожного (пере)підключення свого циклу — після рестарту БД рядок узгоджується зі станом генератора.
+  - `deposit` бере рахунок із найменшим балансом через `FOR NO KEY UPDATE SKIP LOCKED`: рахунок, заблокований переказом, пропускається, і генератор не чекає.
+  - uvicorn запускається з `log_config=None`, тож і його рядки йдуть у JSON через наш обробник.
+  - Сторінка керування збирається з таблиці `SCENARIOS` (заглушка `<!-- SCENARIO_BUTTONS -->` у HTML); запити — на відносний `api/state`, тож працює і напряму, і за gateway.
+  - **Виправлення тесту S2-AC8.** Під фоновим навантаженням тест падав: кожен потік worker кешує `scenario_state` до 1 с і перечитує лише на наступному повідомленні, тож зайнятий потік ще секунду працює за старими налаштуваннями, а пробний «повільний» переказ міг бути повільним через звичайне очікування блокування. Тепер `worker_settings` після зміни рядка чекає `SETTINGS_CACHE_S + 0,2 с` — межа випливає з контракту (§6.6). Перевірено тричі поспіль під навантаженням.
+  - Для вимірювань є помічники з фіксованим вікном (`measurement_window`, `counter_deltas`, `rate_of`, `sample_for`) — це вікно спостереження, а не очікування умови; `time.sleep` як і раніше лише в `helpers.py`.
+  - Фікстура сесії скидає генератор на старті лише тоді, коли він не в типовому стані, — щоб S3-AC12 перевіряв стан, у якому генератор сам піднявся після рестарту.
+  - Заміри: повний `make e2e` — 78 passed за ≈4 хв; після `restart postgres` / `restart rabbitmq` лічильник операцій зростає знову за 3–4 с, `RestartCount` = 0; після рестарту посеред `deadlocks` генератор і `scenario_state` у `normal`.
+  - Ручна перевірка (браузер, dev-режим, `127.0.0.1:8002/control/`): стан оновлюється, активна картка підсвічується, відлік автоповернення йде, «Пауза»/«Продовжити» працюють, при 390 px немає горизонтальної прокрутки, помилок у консолі немає.
