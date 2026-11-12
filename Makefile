@@ -9,7 +9,7 @@ COMPOSE_DEV := $(COMPOSE) -f docker-compose.yml -f docker-compose.dev.yml
 TESTS_RUN   := $(COMPOSE) --profile test run --rm
 TESTS_IMAGE := bankmon-tests
 
-.PHONY: help env up up-dev down clean ps logs lint fmt unit e2e check-ports tests-image
+.PHONY: help env up up-dev down clean ps logs lint fmt unit e2e scenario check-ports tests-image
 
 help: ## Показати перелік команд
 	@echo "BankMonitor — команди:"
@@ -50,6 +50,9 @@ unit: tests-image ## Юніт-тести (стенд не потрібен)
 
 e2e: tests-image ## Наскрізні тести на живому стенді: make e2e [K=<вираз>]
 	$(TESTS_RUN) tests pytest tests/e2e -q $(if $(K),-k "$(K)")
+
+scenario: env ## Увімкнути сценарій: make scenario NAME=<назва> [TTL=<секунди>]
+	@scripts/scenario.sh "$(NAME)" $(TTL)
 
 check-ports: ## Перевірити, що назовні опубліковано лише gateway
 	@scripts/check_ports.sh
