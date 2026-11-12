@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import psycopg
+from opentelemetry import trace
 from psycopg import errors
 
 from bank_worker import metrics
@@ -63,6 +64,7 @@ def process_transfer(
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         settings = get_settings()
+        trace.get_current_span().set_attribute("bank.lock_order", settings.lock_order)
         try:
             with conn.transaction():
                 _apply(conn, msg, settings, attempt)
@@ -82,6 +84,7 @@ def process_transfer(
             if attempt == MAX_ATTEMPTS:
                 return _record_failure(conn, msg, "deadlock", attempt)
             metrics.RETRIES.labels(reason="deadlock").inc()
+            trace.get_current_span().add_event("deadlock_retry", {"attempt": attempt})
             log_event(
                 logger,
                 "warning",
