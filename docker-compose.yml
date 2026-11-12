@@ -42,8 +42,57 @@ services:
       start_interval: 1s
     restart: unless-stopped
 
+  rabbitmq:
+    image: rabbitmq:4.3.7-management
+    # A fixed hostname gives a fixed node name (rabbit@rabbitmq); otherwise a recreated
+    # container would not find its own data in the volume.
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:?}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 60s
+      start_interval: 2s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./services
+      dockerfile: worker/Dockerfile
+    environment:
+      SERVICE_NAME: worker
+      LOG_LEVEL: info
+      DATABASE_URL: postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AMQP_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/%2F
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/metrics', timeout=3)"
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+      start_interval: 1s
+    stop_grace_period: 15s
+    restart: unless-stopped
+
   # Test runner: lint, unit and e2e tests run here, the code comes in via the volume.
   # Started only on demand: make lint / make unit / make e2e.
+  # It must not depend on the worker: the outage tests run while the worker is stopped.
   tests:
     build:
       context: .
@@ -56,12 +105,18 @@ services:
       PG_ADMIN_DSN: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       PG_APP_DSN: postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
       PG_MONITOR_DSN: postgresql://${MONITOR_DB_USER}:${MONITOR_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      AMQP_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/%2F
+      RABBITMQ_API: http://rabbitmq:15672
+      WORKER_URL: http://worker:8000
     volumes:
       - .:/repo:ro
     working_dir: /repo
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
 volumes:
   pg_data:
+  rabbitmq_data:
