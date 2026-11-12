@@ -14,7 +14,7 @@
 | S5 | Prometheus і метрики БД | done | 2026-11-12 | `61d5432` |
 | S6 | Grafana і дашборди | done | 2026-11-12 | `8d25510` |
 | S7 | Loki, Alloy і логи | done | 2026-11-12 | `876c663` |
-| S8 | Tempo, OpenTelemetry і трейси | — | | |
+| S8 | Tempo, OpenTelemetry і трейси | done | 2026-11-12 | `6efab0c` |
 | S9 | Наскрізні сценарії та повний прогін | — | | |
 | S10 | Здача: README, звіт, сценарій показу | — | | |
 
@@ -177,3 +177,21 @@ _Один запис на кожен запуск етапу, нові — в к
   - Помилки Loki `error notifying scheduler … EOF` / `context canceled` з'являються, коли клієнт обриває запит (таймаут тесту) — не дефект.
   - Перевірка дашборда: Grafana вантажить панелі лише у видимій області, тож запити всіх шести панелей виконано через `/grafana/api/ds/query` від імені `viewer`: усі `200`, кожен повертає рядки (1473 точки обсягу, 102 помилки/попередження, 2 невдалі входи з тестів…).
   - Заміри: повний `make e2e` — 234 passed за 8 хв 24 с; `make unit` — 148 passed.
+
+### S8 — Tempo, OpenTelemetry і трейси · 2026-11-12
+- **Результат:** done
+- **AC:** S8-AC1 ✅ · S8-AC2 ✅ · S8-AC3 ✅ · S8-AC4 ✅ · S8-AC5 ✅ · S8-AC6 ✅ · S8-AC7 ✅ · S8-AC8 ✅ · S8-AC9 ✅ · S8-AC10 ✅ · S8-AC11 ✅ · S8-AC12 ✅ · S8-AC13 ✅ · S8-AC14 ✅ · S8-AC15 ✅
+- **Зміни:** `bankmon_common.tracing` (+ `trace_id`/`span_id` у логах, трасування FastAPI в `http.py`); спани `generator.<операція>` і `worker.process_transfer`, подія `deadlock_retry`, exemplars гістограми часу обробки; `observability/tempo/tempo.yml`, сервіс `tempo` (+ dev-порт 3200), `OTEL_EXPORTER_OTLP_ENDPOINT` для трьох сервісів; зв'язки джерел Grafana (exemplars → Tempo, Loki `trace_id` → Tempo, Tempo → Loki); дашборд `bank-traces`, exemplars на панелях часу обробки; ціль `tempo` у Prometheus; помічники `tempo_search`, `tempo_trace`, `trace_spans`, `wait_traces`; `tests/unit/test_tracing.py`, `tests/e2e/test_s08_traces.py`.
+- **Відхилення від плану:** немає.
+- **Нотатки:**
+  - Версії (PyPI, 2026-11-12): `opentelemetry-sdk==1.45.2`, `opentelemetry-exporter-otlp-proto-grpc==1.45.2`, `opentelemetry-instrumentation-{psycopg,pika,fastapi}==0.66b2` (узгоджені між собою; `grpcio` має колесо під arm64).
+  - Образ Tempo 2.10 — distroless (немає оболонки й прапорця перевірки конфігу), користувач 10001; конфіг перевірено запуском. Помилок доступу до тому не було (G4 не знадобилась). Попередження «metrics-generator is not configured» очікуване: metrics-generator план не передбачає.
+  - Трейс переказу: `generator.transfer` → `publish` (producer, pika) → `receive` (consumer, pika; контекст із заголовків повідомлення) → `worker.process_transfer` → SQL-спани psycopg. Інструментацію вмикає `init_tracing` до відкриття з'єднань (G20).
+  - Статус `ERROR` у `worker.process_transfer` — лише для технічних збоїв (вичерпані повтори, помилка SQL, відхилене повідомлення); відмова через брак коштів — `bank.status = "failed"` зі статусом не `error`, помилку показує SQL-спан.
+  - Exemplars віддаються лише у форматі OpenMetrics: `start_http_server` worker сам погоджує формат за `Accept`, Prometheus 3 його просить — перевірено (`# {trace_id="…"}` у виводі) і через `/api/v1/query_exemplars`.
+  - У provisioning Grafana власні заповнювачі (`${__value.raw}`, `${__trace.traceId}`) записано з подвоєним `$`, інакше Grafana підставляє на їх місце змінні середовища.
+  - **Без Tempo** (`docker compose stop tempo`): S2-AC2 зелений, p95 обробки 8,5 мс, ≈14 переказів/с. Записи SDK про помилки експорту й «Queue full» обмежено одним на 30 с фільтром на обробнику кореневого логера: фільтр на логері бачив би лише свої записи, а SDK пише з кількох модулів (спершу так і було — 5 рядків за 75 с; після виправлення 2–3).
+  - S8-AC13 чекає, доки хвилинне вікно p95 заповниться звичайним навантаженням: попередні тести вмикають повільні сценарії, і разовий замір одразу після них давав 0,18 с.
+  - Тест S2-AC2 при зупиненому Tempo запускається з `--noconftest`, бо фікстура сесії чекає на готовність Tempo.
+  - Перевірка зв'язків через API Grafana: derived field у Loki → `tempo`, `tracesToLogsV2` у Tempo → `loki`, `exemplarTraceIdDestinations` у Prometheus → `tempo`, перевірка стану Tempo — `OK`.
+  - Заміри: повний `make e2e` — 247 passed за 10 хв 49 с; `make unit` — 153 passed; `scripts/check_json_logs.sh` для worker, generator, auth — OK, усі останні рядки worker мають `trace_id`.
