@@ -8,8 +8,9 @@ COMPOSE     := docker compose
 COMPOSE_DEV := $(COMPOSE) -f docker-compose.yml -f docker-compose.dev.yml
 TESTS_RUN   := $(COMPOSE) --profile test run --rm
 TESTS_IMAGE := bankmon-tests
+OUTAGE_TEST := $(TESTS_RUN) tests pytest tests/outage/test_s09_worker_outage.py -q
 
-.PHONY: help env up up-dev down clean ps logs lint fmt unit e2e scenario check-ports tests-image
+.PHONY: help env up up-dev down clean ps logs lint fmt unit e2e scenario check-ports outage-test verify tests-image
 
 help: ## Показати перелік команд
 	@echo "BankMonitor — команди:"
@@ -56,3 +57,16 @@ scenario: env ## Увімкнути сценарій: make scenario NAME=<наз
 
 check-ports: ## Перевірити, що назовні опубліковано лише gateway
 	@scripts/check_ports.sh
+
+outage-test: tests-image ## Зупинити worker: черга росте, алерти, після запуску нічого не втрачено
+	@set -e; \
+	$(OUTAGE_TEST) -k phase0; \
+	$(COMPOSE) stop worker; \
+	status=0; \
+	$(OUTAGE_TEST) -k phase1 || status=$$?; \
+	$(COMPOSE) up -d --wait worker; \
+	$(OUTAGE_TEST) -k phase2 || status=$$?; \
+	exit $$status
+
+verify: ## Повна перевірка з чистого стану (≈30 хв); останній рядок — VERIFY OK
+	@scripts/verify.sh
