@@ -8,7 +8,7 @@
 |---|---|---|---|---|
 | S0 | Каркас репозиторію | done | 2026-11-12 | `c7abf61` |
 | S1 | PostgreSQL: схема, сід, ролі | done | 2026-11-12 | `c8e78de` |
-| S2 | RabbitMQ і worker | in progress | 2026-11-12 | |
+| S2 | RabbitMQ і worker | done | 2026-11-12 | `3a68305` |
 | S3 | Generator, сценарії, сторінка керування | — | | |
 | S4 | Авторизація і gateway | — | | |
 | S5 | Prometheus і метрики БД | — | | |
@@ -71,3 +71,22 @@ _Один запис на кожен запуск етапу, нові — в к
   - У базовому режимі `docker compose port postgres 5432` друкує `invalid IP:0` з кодом 0 — так compose повідомляє, що порт не опубліковано. Доказ для R7 — `make check-ports` → `PORTS OK`.
   - `make check-ports` у dev-режимі свідомо падає (`postgres: 127.0.0.1:15432->5432/tcp`).
   - `make e2e` тричі поспіль: 47 passed щоразу; після `docker compose restart postgres` одразу `make e2e K=s01` → 43 passed (фікстура дочікується бази).
+
+### S2 — RabbitMQ і worker · 2026-11-12
+- **Результат:** done
+- **AC:** S2-AC1 ✅ · S2-AC2 ✅ · S2-AC3 ✅ · S2-AC4 ✅ · S2-AC5 ✅ · S2-AC6 ✅ · S2-AC7 ✅ · S2-AC8 ✅ · S2-AC9 ✅ · S2-AC10 ✅ · S2-AC11 ✅ · S2-AC12 ✅ · S2-AC13 ✅ · S2-AC14 ✅
+- **Зміни:** `bankmon_common.{db,amqp,messages}`; сервіс `services/worker` (`processor`, `consumer`, `settings`, `metrics`, `main`, Dockerfile); `rabbitmq` і `worker` у compose; тести `tests/unit/test_{messages,lock_order}.py`, `tests/e2e/test_s02_worker.py`, `tests/outage/`; `scripts/check_json_logs.sh`.
+- **Відхилення від плану:** блокування `FOR NO KEY UPDATE` замість `FOR UPDATE` (запит 2). Інше — у нотатках.
+- **Нотатки:**
+  - Версія пакета (PyPI, 2026-11-12): `pika==1.4.4`. `psycopg[binary]==3.3.8` і `prometheus-client==0.26.0` — як раніше. Генератору (S3) брати ті самі.
+  - `processed_at` worker записує як `clock_timestamp()`, а не типовим `now()`: `now()` — це початок транзакції, і паузи сценаріїв (`pg_sleep`) не потрапили б у різницю `processed_at - requested_at`. На цьому тримається S2-AC7.
+  - Дублікати захищені двічі: перевірка `SELECT 1 FROM transfers` на початку і перехоплення `UniqueViolation` на `transfers_pkey` (два однакові повідомлення часто обробляються двома потоками одночасно). Запис `failed` використовує `ON CONFLICT DO NOTHING RETURNING id`.
+  - Втрата з'єднання з БД посеред повідомлення: без `ack`, обидва з'єднання закриваються, повідомлення повертається в чергу, потік перепідключається. Відрізняється від помилки SQL перевіркою `conn.closed or conn.broken`.
+  - `bank_worker_db_errors_total` рахує й очікувані помилки (40P01, 23514) — для панелі «Помилки БД за кодом SQLSTATE». Подія логу `db_error` пишеться лише для неочікуваних.
+  - Серії `bank_transfers_processed_total` для `completed/none`, `failed/insufficient_funds`, `failed/deadlock` і `bank_transfer_retries_total{reason="deadlock"}` створюються одразу з нулем — щоб алерти й панелі не мали «дірок».
+  - Тести S2 написано з розрахунку на фонове навантаження з S3: перевірки через рядки своїх переказів; лічильник `failed/insufficient_funds` перевіряється як «зріс щонайменше на 1». Лічильники дублікатів і мертвих повідомлень — точно, бо генератор таких не створює.
+  - Статистика API керування RabbitMQ запізнюється до 5 с. Для живих даних (готові повідомлення, кількість споживачів) є `queue_counts()` — пасивне оголошення черги через AMQP.
+  - Сервіс `tests` свідомо не залежить від `worker`: інакше `docker compose run tests` запускав би зупинений worker і ламав тест збою.
+  - Тест збою S2-AC11 — дві фази в `tests/outage/test_s02_redelivery.py`; спільний `transfer_id` передається змінною середовища, бо репозиторій у контейнері тільки для читання, а том `tests_state` з'явиться лише в S9:
+    `id=$(uuidgen | tr A-Z a-z)`; `docker compose stop worker`; `docker compose --profile test run --rm -e S02_TRANSFER_ID=$id tests pytest tests/outage/test_s02_redelivery.py -k publish_while_down`; `docker compose start worker`; те саме з `-k processed_after_start`.
+  - Заміри: S2-AC8 (40 зустрічних переказів у режимі naive) ≈ 26 с; після `restart rabbitmq` S2-AC2 зелений за 3 с, після `restart postgres` — за 2 с, `RestartCount` worker = 0; `docker compose stop worker` — 0,2 с, код 0; `scripts/check_json_logs.sh worker` → `JSON LOGS OK (worker, 200)`.
