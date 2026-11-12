@@ -7,6 +7,7 @@ phases of test_s02_redelivery.py.
 """
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -28,3 +29,9 @@ def redelivery_transfer_id() -> str:
     if not value:
         pytest.fail("set S02_TRANSFER_ID to the same uuid for both phases (docs/10-app.md, S2)")
     return value
+
+
+@pytest.fixture
+def state_file() -> Path:
+    """Numbers shared by the three phases of test_s09_worker_outage.py (tests_state volume)."""
+    return Path("/state") / "s09_worker_outage.json"

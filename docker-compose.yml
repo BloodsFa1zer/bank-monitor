@@ -358,6 +358,8 @@ services:
       TEMPO_URL: http://tempo:3200
     volumes:
       - .:/repo:ro
+      # Shared by the phases of the worker outage test (make outage-test).
+      - tests_state:/state
     working_dir: /repo
     depends_on:
       postgres:
@@ -373,3 +375,4 @@ volumes:
   grafana_data:
   loki_data:
   tempo_data:
+  tests_state:
