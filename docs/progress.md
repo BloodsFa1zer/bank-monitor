@@ -12,7 +12,7 @@
 | S3 | Generator, сценарії, сторінка керування | done | 2026-11-12 | `5aecd41` |
 | S4 | Авторизація і gateway | done | 2026-11-12 | `9522066` |
 | S5 | Prometheus і метрики БД | done | 2026-11-12 | `61d5432` |
-| S6 | Grafana і дашборди | in progress | 2026-11-12 | |
+| S6 | Grafana і дашборди | done | 2026-11-12 | `8d25510` |
 | S7 | Loki, Alloy і логи | — | | |
 | S8 | Tempo, OpenTelemetry і трейси | — | | |
 | S9 | Наскрізні сценарії та повний прогін | — | | |
@@ -147,3 +147,19 @@ _Один запис на кожен запуск етапу, нові — в к
   - **Граблі:** змонтовані конфіги не перечитуються самі. Після зміни `gateway/nginx.conf` — `docker compose restart gateway`; після зміни `prometheus.yml` чи правил — `docker compose restart prometheus`. `make up` не перестворює контейнер, якщо змінився лише вміст змонтованого файлу (у цьому етапі через це `/prometheus/` спершу віддавав 404).
   - Заміри: `TransferFailureRatioHigh` і `DeadlocksDetected` переходять у `firing` і назад у `inactive` у межах 120/150 с; у звичайному режимі за 60 с жодного алерту; зразок `up{job="worker"}` до перезапуску Prometheus читається й після; повний `make e2e` — 152 passed за ≈8 хв 21 с.
   - Ручна перевірка (браузер, `admin`): `/prometheus/targets` — усі шість цілей `UP`; `/prometheus/alerts` — 7 правил `INACTIVE`; усі запити сторінок — `200`.
+
+### S6 — Grafana і дашборди · 2026-11-12
+- **Результат:** done
+- **AC:** S6-AC1 ✅ · S6-AC2 ✅ · S6-AC3 ✅ · S6-AC4 ✅ · S6-AC5 ✅ · S6-AC6 ✅ · S6-AC7 ✅ · S6-AC8 ✅ · S6-AC9 ✅ · S6-AC10 ✅ · S6-AC11 ✅ · S6-AC12 ✅
+- **Зміни:** `observability/grafana/provisioning/{datasources,dashboards}/*.yml`; дашборди `bank-overview`, `bank-db`, `bank-app`, `bank-queue`; сервіси `grafana` і одноразовий `grafana-init` у compose (+ dev-порт 3000); маршрути `/grafana/` і `/grafana/api/live/` (WebSocket) у gateway; ціль `grafana` у Prometheus; експортер — `--collector.stat_statements.include_query`; помічники `grafana_api`, `dashboard_files`, `panel_exprs`; `tests/e2e/test_s06_grafana.py`.
+- **Відхилення від плану:** запит 3 — домашній дашборд задає одноразовий сервіс `grafana-init` замість `default_home_dashboard_path`; експортер віддає текст запиту для таблиці «Найважчі запити».
+- **Нотатки:**
+  - Перевірено на образі: роль із заголовка auth proxy (`headers = Role:X-WEBAUTH-ROLE`) у Grafana 13.2.6 працює і з `sync_ttl = 0` синхронізується на кожному запиті (Admin → Viewer → Admin). Документація цю можливість лише згадує в прикладі. Перша перевірка помилково показала протилежне через розбиття слів у zsh — у скриптах перевірок передавати значення явно.
+  - `default_home_dashboard_path` у Grafana 13 віддає окрему віртуальну копію з uid `default-home-dashboard`, яку `Viewer` відкрити не може (`403`). Тому домашній дашборд задається налаштуванням організації (`PUT /api/org/preferences`, `homeDashboardUID`) з одноразового контейнера; `gateway` залежить від нього з `service_completed_successfully` — `up --wait` це приймає (G17 перевірено).
+  - Під підшляхом Grafana віддає метрики на `/grafana/metrics` (`/metrics` перенаправляє на `root_url`) — так і налаштовано ціль Prometheus.
+  - Дашборди згенеровано скриптом (тимчасовим, поза репозиторієм) і перевірено на перекриття панелей. Показники огляду — два ряди по чотири (у ряд по вісім заголовки обрізались). Таблиця «Активні алерти» без алертів показує «Активних алертів немає» замість «No data». Вирази з рідкісними метриками закінчуються `or vector(0)`, частки — `clamp_min(…, 1e-9)` у знаменнику.
+  - Grafana логує у JSON (`GF_LOG_CONSOLE_FORMAT=json`) — знадобиться в S7.
+  - Ручна перевірка (браузер, `viewer`, 1440 px): після входу одразу відкривається «BankMonitor — огляд»; на всіх чотирьох дашбордах немає «No data» і помилок панелей; помилок WebSocket у консолі немає; запити `/grafana/api/ds/query` — `200`. Значення на огляді: 7 з 7 сервісів, ≈47 транзакцій/с, ≈14 переказів/с, відмов 0 %, p95 ≈ 5 мс.
+  - Злиття S5 у `main` не змінювало дерева відносно перевіреної гілки, тому повний прогін на `main` після нього не повторювався; його покриває прогін S6 і `make verify` (S9).
+  - **Виправлення перевірки інваріантів.** Повний прогін «зависав»: запит I4 у `check_invariants()` (`LEFT JOIN … GROUP BY t.id … LIMIT 5`) планувальник виконував вкладеним циклом transfers × ledger_entries (≈10¹⁰ порівнянь) — понад 4 хв на 74 тис. переказів. Тепер проводки спершу агрегуються за `transfer_id`, а потім з'єднуються з переказами: 88 мс. Умову обгорнуто в `COALESCE(…, false)` — без цього завершений переказ без проводок давав `NULL` і зникав з результату (це одразу зловив тест `test_s01_ac3_check_invariants_detects_violations[I4]`).
+  - Заміри: повний `make e2e` — 222 passed за 8 хв 31 с.
