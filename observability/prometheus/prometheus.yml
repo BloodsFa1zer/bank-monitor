@@ -40,3 +40,11 @@ scrape_configs:
     metrics_path: /grafana/metrics
     static_configs:
       - targets: ["grafana:3000"]
+
+  - job_name: loki
+    static_configs:
+      - targets: ["loki:3100"]
+
+  - job_name: alloy
+    static_configs:
+      - targets: ["alloy:12345"]

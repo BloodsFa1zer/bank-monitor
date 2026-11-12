@@ -502,7 +502,14 @@ def panel_exprs(dashboard: dict) -> list[tuple[str, str, str]]:
     Grafana variables are replaced by what Grafana itself would use for a
     15-minute range, so the query can be sent to the data source directly.
     """
-    replacements = {"$__rate_interval": "1m", "$__interval": "15s", "$__range": "15m"}
+    replacements = {
+        "$__rate_interval": "1m",
+        "$__interval": "15s",
+        "$__range": "15m",
+        # template variables of the logs dashboard, at their defaults
+        "$service": ".+",
+        "$search": "",
+    }
     queries = []
     for panel in dashboard["panels"]:
         for target in panel.get("targets", []):
@@ -512,3 +519,65 @@ def panel_exprs(dashboard: dict) -> list[tuple[str, str, str]]:
             uid = (target.get("datasource") or panel.get("datasource") or {}).get("uid", "")
             queries.append((panel["title"], uid, query))
     return queries
+
+
+# --- Loki (S7) ---------------------------------------------------------------
+
+LOKI_URL = os.environ.get("LOKI_URL", "http://loki:3100")
+
+
+def loki_query(logql: str, since_s: float = 300, limit: int = 100) -> list:
+    """Lines of a LogQL query over the last ``since_s`` seconds, newest first.
+
+    Each line: {"ts": ns, "labels": {...}, "line": str, "json": dict | None}.
+    A metric query (count_over_time, …) returns Loki's matrix result as is.
+    """
+    end = time.time_ns()
+    response = requests.get(
+        f"{LOKI_URL}/loki/api/v1/query_range",
+        params={
+            "query": logql,
+            "start": end - int(since_s * 1e9),
+            "end": end,
+            "limit": limit,
+            "direction": "backward",
+        },
+        timeout=20,
+    )
+    response.raise_for_status()
+    data = response.json()["data"]
+    if data["resultType"] != "streams":
+        return data["result"]
+    rows = []
+    for stream in data["result"]:
+        for ts, line in stream["values"]:
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                parsed = None
+            rows.append(
+                {
+                    "ts": int(ts),
+                    "labels": stream["stream"],
+                    "line": line,
+                    "json": parsed if isinstance(parsed, dict) else None,
+                }
+            )
+    rows.sort(key=lambda row: row["ts"], reverse=True)
+    return rows
+
+
+def loki_labels() -> set[str]:
+    response = requests.get(f"{LOKI_URL}/loki/api/v1/labels", timeout=10)
+    response.raise_for_status()
+    return set(response.json().get("data") or [])
+
+
+def wait_logs(logql: str, since_s: float = 300, timeout: float = 30, min_lines: int = 1) -> list:
+    """Wait until a LogQL query returns at least ``min_lines`` lines; return them."""
+
+    def enough():
+        rows = loki_query(logql, since_s=since_s)
+        return rows if len(rows) >= min_lines else None
+
+    return wait_until(enough, timeout=timeout, interval=1, desc=f"logs {logql}")

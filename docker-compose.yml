@@ -195,6 +195,32 @@ services:
       start_interval: 1s
     restart: unless-stopped
 
+  # No healthcheck: the image has no shell or HTTP client (G2); the tests poll /ready.
+  loki:
+    image: grafana/loki:3.6.20
+    command: ["-config.file=/etc/loki/loki.yml"]
+    volumes:
+      - ./observability/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki_data:/loki
+    restart: unless-stopped
+
+  # Reads the logs of the project's containers through the Docker socket (read-only)
+  # and pushes them to Loki. The image runs as root, which the socket needs (G6).
+  # No healthcheck: the image has no HTTP client (G2).
+  alloy:
+    image: grafana/alloy:v1.21.3
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:13.2.6
     environment:
@@ -316,6 +342,7 @@ services:
       AUTH_URL: http://auth:8000
       PROM_URL: http://prometheus:9090
       GRAFANA_URL: http://grafana:3000/grafana
+      LOKI_URL: http://loki:3100
     volumes:
       - .:/repo:ro
     working_dir: /repo
@@ -331,3 +358,4 @@ volumes:
   auth_data:
   prom_data:
   grafana_data:
+  loki_data:
