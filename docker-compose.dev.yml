@@ -4,3 +4,7 @@ services:
   postgres:
     # 15432 on the host: 5432 is often taken by a locally installed PostgreSQL.
     ports: ["127.0.0.1:15432:5432"]
+  rabbitmq:
+    ports: ["127.0.0.1:15672:15672"]
+  worker:
+    ports: ["127.0.0.1:8001:8000"]

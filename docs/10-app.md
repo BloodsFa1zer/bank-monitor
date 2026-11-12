@@ -166,9 +166,9 @@ scripts/check_ports.sh
 
    1. Якщо рядок `transfers` з таким `id` уже є → `Outcome("duplicate", None, 0)`.
    2. До `MAX_ATTEMPTS` спроб. На початку кожної — свіжі `ScenarioSettings`. Усередині однієї транзакції, саме в такому порядку:
-      - `SELECT id FROM accounts WHERE id = %s FOR UPDATE` для першого рахунку за `order_accounts`;
+      - `SELECT id FROM accounts WHERE id = %s FOR NO KEY UPDATE` для першого рахунку за `order_accounts` (не `FOR UPDATE`: той конфліктує з блокуваннями `KEY SHARE` перевірок зовнішніх ключів, і запис невдалого переказу сам потрапляв би у взаємне блокування);
       - якщо `lock_gap_ms > 0` → `SELECT pg_sleep(%s)`;
-      - той самий `SELECT … FOR UPDATE` для другого рахунку;
+      - той самий `SELECT … FOR NO KEY UPDATE` для другого рахунку;
       - якщо будь-який із рахунків не знайдено → виняток `UnknownAccount`;
       - якщо `sleep_ms > 0` → `SELECT pg_sleep(%s)`;
       - `INSERT INTO transfers` зі статусом `completed` і номером спроби в `attempts`;
