@@ -16,8 +16,10 @@ from bank_generator.scenarios import NORMAL, SCENARIOS, Scenario
 from bank_generator.state import ControlState
 from bankmon_common import amqp, db
 from bankmon_common.logging import log_event
+from bankmon_common.tracing import get_tracer
 
 logger = logging.getLogger(__name__)
+tracer = get_tracer("bank_generator")
 
 OPERATION_WEIGHTS = {"transfer": 70, "balance_check": 20, "statement": 8, "deposit": 2}
 MAX_LAG_S = 1.0
@@ -137,14 +139,22 @@ class Engine(threading.Thread):
         )[0]
         started = time.perf_counter()
         try:
-            if operation == "transfer":
-                operations.transfer(self._channel, self._accounts, scenario, self._rng)
-            elif operation == "balance_check":
-                operations.balance_check(self._db, self._accounts, self._rng)
-            elif operation == "statement":
-                operations.statement(self._db, self._accounts, self._rng)
-            else:
-                operations.deposit(self._db)
+            # One span per client operation; a transfer's span is the root of a trace that
+            # continues through RabbitMQ into the worker (§6.12).
+            with tracer.start_as_current_span(f"generator.{operation}") as span:
+                span.set_attribute("bank.scenario", scenario.name)
+                if operation == "transfer":
+                    msg = operations.transfer(self._channel, self._accounts, scenario, self._rng)
+                    span.set_attribute("bank.transfer_id", str(msg.transfer_id))
+                    span.set_attribute("bank.from_account", msg.from_account)
+                    span.set_attribute("bank.to_account", msg.to_account)
+                    span.set_attribute("bank.amount", f"{msg.amount:.2f}")
+                elif operation == "balance_check":
+                    operations.balance_check(self._db, self._accounts, self._rng)
+                elif operation == "statement":
+                    operations.statement(self._db, self._accounts, self._rng)
+                else:
+                    operations.deposit(self._db)
         except (psycopg.Error, AMQPError) as exc:
             metrics.OPERATIONS.labels(operation=operation, result="error").inc()
             log_event(

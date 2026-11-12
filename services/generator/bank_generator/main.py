@@ -17,12 +17,15 @@ from bankmon_common import db
 from bankmon_common.config import env_float, env_str
 from bankmon_common.logging import log_event, setup_logging
 from bankmon_common.metrics import register_build_info
+from bankmon_common.tracing import init_tracing, shutdown_tracing
 
 logger = logging.getLogger("bank_generator")
 
 
 def main() -> None:
     setup_logging("generator")
+    # Before any connection or app: instrumentation only sees what is created later (G20).
+    init_tracing("generator")
     logging.getLogger("pika").setLevel(logging.WARNING)
 
     rate = env_float("GEN_RATE", 20.0)
@@ -80,6 +83,7 @@ def main() -> None:
     )
     server.run()
     stopping.set()
+    shutdown_tracing()
     logger.info("Generator stopped")
 
 
