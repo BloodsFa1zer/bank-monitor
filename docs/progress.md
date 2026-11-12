@@ -11,7 +11,7 @@
 | S2 | RabbitMQ і worker | done | 2026-11-12 | `3a68305` |
 | S3 | Generator, сценарії, сторінка керування | done | 2026-11-12 | `5aecd41` |
 | S4 | Авторизація і gateway | done | 2026-11-12 | `9522066` |
-| S5 | Prometheus і метрики БД | — | | |
+| S5 | Prometheus і метрики БД | done | 2026-11-12 | `61d5432` |
 | S6 | Grafana і дашборди | — | | |
 | S7 | Loki, Alloy і логи | — | | |
 | S8 | Tempo, OpenTelemetry і трейси | — | | |
@@ -127,3 +127,17 @@ _Один запис на кожен запуск етапу, нові — в к
   - Помічник `GatewaySession.get` перевизначено: `requests.Session.get` сам передає `allow_redirects=True`, і тести йшли за перенаправленнями.
   - Ручна перевірка (браузер, `localhost:8080`): без входу `/control/` → форма входу; невірний пароль → `401`, «Невірний логін або пароль», логін лишився в полі; вхід `admin` → сторінка керування (`rd` збережено й після невдалої спроби); вихід → форма; `viewer` → `/control/` `403`. Наприкінці виконано вихід.
   - Заміри: повний `make e2e` — 102 passed за ≈4 хв 13 с; `make unit` — 148 passed.
+
+### S5 — Prometheus і метрики БД · 2026-11-12
+- **Результат:** done
+- **AC:** S5-AC1 ✅ · S5-AC2 ✅ · S5-AC3 ✅ · S5-AC4 ✅ · S5-AC5 ✅ · S5-AC6 ✅ · S5-AC7 ✅ · S5-AC8 ✅ · S5-AC9 ✅ · S5-AC10 ✅ · S5-AC11 ✅
+- **Зміни:** `observability/prometheus/prometheus.yml`, `rules/bank.yml`; `postgres-exporter` і `prometheus` у compose (+ dev-порти 9090, 9187); маршрут `/prometheus/` у gateway; помічники `prom_*`, `alert_states`, `wait_alert`; `tests/e2e/test_s05_metrics.py`.
+- **Відхилення від плану:** немає.
+- **Нотатки:**
+  - Підтверджено `--help` зафіксованих версій: експортер — `--collector.stat_statements` (типово вимкнений), підключення через `DATA_SOURCE_NAME`; Prometheus 3.15 — `--web.external-url`, `--web.route-prefix`, `--storage.tsdb.retention.time`, `--enable-feature=exemplar-storage`. В образах експортера й Prometheus є `wget` — healthcheck через нього (G2). Плагін `rabbitmq_prometheus` уже ввімкнений в образі.
+  - `scrape_timeout: 4s` задано явно: типові 10 с більші за інтервал 5 с, і Prometheus такий конфіг відкидає.
+  - Усі очікувані назви чужих метрик збіглися з фактичними (`pg_stat_activity_count`, `pg_locks_count`, `pg_settings_max_connections`, `pg_stat_user_tables_n_live_tup`, `rabbitmq_queue_*{queue=…}`); `pg_stat_statements` дає `pg_stat_statements_{calls,seconds,rows,block_read_seconds,block_write_seconds}_total`.
+  - Prometheus 3 сам перенаправляє `/prometheus/` → `/prometheus/query`; UI посилається на ресурси відносно (`./assets/…`), тож вони вантажаться через `/prometheus/assets/…`.
+  - **Граблі:** змонтовані конфіги не перечитуються самі. Після зміни `gateway/nginx.conf` — `docker compose restart gateway`; після зміни `prometheus.yml` чи правил — `docker compose restart prometheus`. `make up` не перестворює контейнер, якщо змінився лише вміст змонтованого файлу (у цьому етапі через це `/prometheus/` спершу віддавав 404).
+  - Заміри: `TransferFailureRatioHigh` і `DeadlocksDetected` переходять у `firing` і назад у `inactive` у межах 120/150 с; у звичайному режимі за 60 с жодного алерту; зразок `up{job="worker"}` до перезапуску Prometheus читається й після; повний `make e2e` — 152 passed за ≈8 хв 21 с.
+  - Ручна перевірка (браузер, `admin`): `/prometheus/targets` — усі шість цілей `UP`; `/prometheus/alerts` — 7 правил `INACTIVE`; усі запити сторінок — `200`.
