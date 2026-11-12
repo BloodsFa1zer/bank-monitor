@@ -98,7 +98,7 @@ git check-ignore .env
 7. **Сервіс `tests`** отримує змінні `PG_ADMIN_DSN`, `PG_APP_DSN`, `PG_MONITOR_DSN` (зібрані в compose з `.env`) і `depends_on` на `postgres` зі `service_healthy`. У `tests/requirements.txt` додається `psycopg[binary]`.
 8. **`helpers.py`:** `db(role="admin")` — контекстний менеджер, що повертає зʼєднання psycopg відповідної ролі; `check_invariants()` — перевіряє I1–I4 одним запитом на кожен інваріант і повертає перелік порушень.
 9. **`conftest.py`:** фікстура рівня сесії чекає, доки `SELECT 1` від імені `bank_app` пройде (до 180 с).
-10. **Dev-режим:** порт 5432 на `127.0.0.1`.
+10. **Dev-режим:** порт контейнера 5432 публікується як `127.0.0.1:15432` (на хості 5432 часто зайнятий локальним PostgreSQL).
 
 **Поза межами етапу:** будь-який Python-код сервісів, RabbitMQ, експортер.
 
@@ -110,7 +110,7 @@ git check-ignore .env
 - **S1-AC4.** Ролі: `bank_app` виконує `SELECT`, `INSERT`, `UPDATE` на всіх чотирьох таблицях, а `DELETE`, `TRUNCATE` і `CREATE TABLE` дають `InsufficientPrivilege`. `bank_monitor` бачить у `pg_stat_activity` текст запиту чужої сесії, читає `accounts`, а `UPDATE accounts` дає `InsufficientPrivilege`.
 - **S1-AC5.** `SHOW` повертає: `log_min_duration_statement` = `200ms`, `log_lock_waits` = `on`, `deadlock_timeout` = `500ms`, `track_io_timing` = `on`; `shared_preload_libraries` містить `pg_stat_statements`; `SELECT count(*) FROM pg_stat_statements` виконується від імені `bank_monitor`.
 - **S1-AC6.** Дані переживають `docker compose restart postgres`: кількість рядків `ledger_entries` до й після однакова. `make clean && make up` повертає початковий сід.
-- **S1-AC7.** У dev-режимі `docker compose port postgres 5432` показує `127.0.0.1:5432`; у базовому режимі порт не опубліковано.
+- **S1-AC7.** У dev-режимі `docker compose port postgres 5432` показує `127.0.0.1:15432`; у базовому режимі порт не опубліковано.
 
 **Перевірка:**
 
