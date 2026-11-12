@@ -151,6 +151,49 @@ services:
       start_interval: 1s
     restart: unless-stopped
 
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.20.1
+    command:
+      - --collector.stat_statements
+    environment:
+      # The monitoring role: pg_monitor plus SELECT on accounts, nothing else.
+      DATA_SOURCE_NAME: postgresql://${MONITOR_DB_USER}:${MONITOR_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9187/metrics"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+      start_interval: 1s
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.15.1
+    # Our own command replaces the image's default flags, so all of them are listed.
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      # Served by the gateway under /prometheus/; inside the network the API stays at /.
+      - --web.external-url=http://localhost:${GATEWAY_PORT:-8080}/prometheus/
+      - --web.route-prefix=/
+      - --enable-feature=exemplar-storage
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/prometheus/rules:/etc/prometheus/rules:ro
+      - prom_data:/prometheus
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+      start_interval: 1s
+    restart: unless-stopped
+
   # The only service with a port on the host (rule R7).
   gateway:
     image: nginx:1.30.6-alpine
@@ -162,6 +205,8 @@ services:
       auth:
         condition: service_healthy
       generator:
+        condition: service_healthy
+      prometheus:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
@@ -193,6 +238,7 @@ services:
       GENERATOR_URL: http://generator:8000
       GATEWAY_URL: http://gateway:8080
       AUTH_URL: http://auth:8000
+      PROM_URL: http://prometheus:9090
     volumes:
       - .:/repo:ro
     working_dir: /repo
@@ -206,3 +252,4 @@ volumes:
   pg_data:
   rabbitmq_data:
   auth_data:
+  prom_data:

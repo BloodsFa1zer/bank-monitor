@@ -16,6 +16,7 @@ from .helpers import (
     AUTH_URL,
     GATEWAY_URL,
     GENERATOR_URL,
+    PROM_URL,
     WORKER_URL,
     control_get,
     control_put,
@@ -51,6 +52,11 @@ def _gateway_and_auth_healthy() -> bool:
     return True
 
 
+def _prometheus_ready() -> bool:
+    requests.get(f"{PROM_URL}/-/ready", timeout=3).raise_for_status()
+    return True
+
+
 def reset_generator(only_if_needed: bool = False) -> None:
     """Back to the normal scenario, default rate, running.
 
@@ -70,6 +76,7 @@ def stack_ready() -> Iterator[None]:
     wait_until(_worker_consuming, timeout=180, interval=1, desc="all worker consumers to attach")
     wait_until(_generator_healthy, timeout=180, interval=1, desc="the generator to answer")
     wait_until(_gateway_and_auth_healthy, timeout=180, interval=1, desc="auth and the gateway")
+    wait_until(_prometheus_ready, timeout=180, interval=1, desc="Prometheus to be ready")
     reset_generator(only_if_needed=True)
     yield
     reset_generator()
