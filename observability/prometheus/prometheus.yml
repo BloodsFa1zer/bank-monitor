@@ -34,3 +34,9 @@ scrape_configs:
   - job_name: auth
     static_configs:
       - targets: ["auth:8000"]
+
+  # With serve_from_sub_path Grafana serves its metrics under the sub path too.
+  - job_name: grafana
+    metrics_path: /grafana/metrics
+    static_configs:
+      - targets: ["grafana:3000"]
