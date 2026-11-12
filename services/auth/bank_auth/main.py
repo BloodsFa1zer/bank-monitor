@@ -9,6 +9,7 @@ from bank_auth.users import UserStore
 from bankmon_common.config import env_str
 from bankmon_common.logging import log_event, setup_logging
 from bankmon_common.metrics import register_build_info
+from bankmon_common.tracing import init_tracing, shutdown_tracing
 
 logger = logging.getLogger("bank_auth")
 
@@ -17,6 +18,7 @@ MIN_SECRET_LENGTH = 32
 
 def main() -> None:
     setup_logging("auth")
+    init_tracing("auth")  # before create_app, which instruments FastAPI
 
     if len(env_str("AUTH_JWT_SECRET")) < MIN_SECRET_LENGTH:
         logger.error(
@@ -41,6 +43,7 @@ def main() -> None:
     uvicorn.Server(
         uvicorn.Config(app, host="0.0.0.0", port=8000, log_config=None, access_log=False)
     ).run()
+    shutdown_tracing()
 
 
 if __name__ == "__main__":

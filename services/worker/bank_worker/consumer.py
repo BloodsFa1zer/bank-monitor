@@ -11,6 +11,7 @@ import time
 from datetime import UTC, datetime
 
 import psycopg
+from opentelemetry.trace import Status, StatusCode
 from pika.exceptions import AMQPError
 
 from bank_worker import metrics
@@ -19,8 +20,10 @@ from bank_worker.settings import SettingsCache
 from bankmon_common import amqp, db
 from bankmon_common.logging import log_event
 from bankmon_common.messages import InvalidMessage, TransferRequested, decode
+from bankmon_common.tracing import current_trace_ids, get_tracer
 
 logger = logging.getLogger(__name__)
+tracer = get_tracer("bank_worker")
 
 
 class DatabaseUnavailable(Exception):
@@ -101,12 +104,20 @@ class Consumer(threading.Thread):
     # --- messages -------------------------------------------------------------
 
     def _on_message(self, channel, method, properties, body: bytes) -> None:
-        with metrics.IN_FLIGHT.track_inprogress():
+        # The pika instrumentation runs this callback inside the "receive" span whose
+        # parent came with the message headers, so this span joins the generator's trace.
+        with (
+            metrics.IN_FLIGHT.track_inprogress(),
+            tracer.start_as_current_span("worker.process_transfer") as span,
+        ):
             try:
                 msg = decode(body)
+                span.set_attribute("bank.transfer_id", str(msg.transfer_id))
+                span.set_attribute("bank.scenario", msg.scenario)
                 started = time.monotonic()
                 outcome = process_transfer(self._db, msg, self._settings.get)
             except (InvalidMessage, UnknownAccount) as exc:
+                span.set_status(Status(StatusCode.ERROR, str(exc)))
                 self._reject(channel, method, str(exc))
                 return
             except psycopg.Error as exc:
@@ -114,6 +125,7 @@ class Consumer(threading.Thread):
                     # No ack: the message returns to the queue when the channel closes.
                     raise DatabaseUnavailable from exc
                 sqlstate = exc.sqlstate or "unknown"
+                span.set_status(Status(StatusCode.ERROR, f"database error {sqlstate}"))
                 metrics.DB_ERRORS.labels(sqlstate=sqlstate).inc()
                 log_event(
                     logger,
@@ -126,8 +138,17 @@ class Consumer(threading.Thread):
                 self._reject(channel, method, f"database error {sqlstate}")
                 return
             except Exception as exc:
+                span.record_exception(exc)
+                span.set_status(Status(StatusCode.ERROR, repr(exc)))
                 self._reject(channel, method, f"unexpected error: {exc!r}", exc_info=True)
                 return
+            span.set_attribute("bank.status", outcome.status)
+            span.set_attribute("bank.attempts", outcome.attempts)
+            if outcome.reason:
+                span.set_attribute("bank.fail_reason", outcome.reason)
+            if outcome.reason == "deadlock":
+                # A technical failure; a refusal for lack of funds is a normal answer (§6.12).
+                span.set_status(Status(StatusCode.ERROR, "deadlock retries exhausted"))
             channel.basic_ack(method.delivery_tag)
             self._record(msg, outcome, time.monotonic() - started)
 
@@ -151,7 +172,10 @@ class Consumer(threading.Thread):
         metrics.TRANSFERS_PROCESSED.labels(
             status=outcome.status, reason=outcome.reason or "none"
         ).inc()
-        metrics.PROCESSING_SECONDS.labels(status=outcome.status).observe(elapsed)
+        # The exemplar lets Grafana jump from a point on the latency graph to this trace.
+        trace_ids = current_trace_ids()
+        exemplar = {"trace_id": trace_ids[0]} if trace_ids else None
+        metrics.PROCESSING_SECONDS.labels(status=outcome.status).observe(elapsed, exemplar=exemplar)
         waited = (datetime.now(UTC) - msg.requested_at).total_seconds()
         metrics.E2E_SECONDS.observe(max(0.0, waited))
         fields = {

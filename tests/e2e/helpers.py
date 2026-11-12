@@ -4,6 +4,7 @@ Waiting is done only by polling with a timeout (rule R12): this module is the
 only place in tests/ where time.sleep is allowed.
 """
 
+import base64
 import json
 import os
 import time
@@ -581,3 +582,109 @@ def wait_logs(logql: str, since_s: float = 300, timeout: float = 30, min_lines: 
         return rows if len(rows) >= min_lines else None
 
     return wait_until(enough, timeout=timeout, interval=1, desc=f"logs {logql}")
+
+
+# --- Tempo (S8) --------------------------------------------------------------
+
+TEMPO_URL = os.environ.get("TEMPO_URL", "http://tempo:3200")
+
+
+def tempo_search(traceql: str, since_s: float = 300, limit: int = 20) -> list[dict]:
+    """Traces matching a TraceQL query over the last ``since_s`` seconds."""
+    end = int(time.time()) + 1
+    response = requests.get(
+        f"{TEMPO_URL}/api/search",
+        params={"q": traceql, "start": int(end - since_s) - 1, "end": end, "limit": limit},
+        timeout=20,
+    )
+    response.raise_for_status()
+    return response.json().get("traces") or []
+
+
+def tempo_trace(trace_id: str) -> dict | None:
+    """The whole trace in OTLP JSON, or None while Tempo does not have it yet."""
+    response = requests.get(f"{TEMPO_URL}/api/traces/{trace_id}", timeout=20)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return response.json()
+
+
+def _hex_id(value: str) -> str:
+    """Span and trace ids come as hex or as base64, depending on the API version."""
+    if not value:
+        return ""
+    if len(value) in (16, 32) and all(c in "0123456789abcdef" for c in value.lower()):
+        return value.lower()
+    return base64.b64decode(value).hex()
+
+
+def _attribute_value(value: dict):
+    for key in ("stringValue", "boolValue", "doubleValue"):
+        if key in value:
+            return value[key]
+    if "intValue" in value:
+        return int(value["intValue"])
+    return value
+
+
+def _attributes(items: list[dict] | None) -> dict:
+    return {item["key"]: _attribute_value(item.get("value", {})) for item in items or []}
+
+
+_KINDS = {1: "internal", 2: "server", 3: "client", 4: "producer", 5: "consumer"}
+_STATUSES = {0: "unset", 1: "ok", 2: "error"}
+
+
+def _kind(value) -> str:
+    if isinstance(value, int):
+        return _KINDS.get(value, "unspecified")
+    return str(value or "").removeprefix("SPAN_KIND_").lower() or "unspecified"
+
+
+def _status(status: dict | None) -> str:
+    code = (status or {}).get("code", 0)
+    if isinstance(code, int):
+        return _STATUSES.get(code, "unset")
+    return str(code).removeprefix("STATUS_CODE_").lower()
+
+
+def trace_spans(trace: dict) -> list[dict]:
+    """Every span of a trace as a flat dict: service, name, ids, duration, status, …"""
+    batches = trace.get("batches") or trace.get("resourceSpans")
+    if batches is None:
+        batches = (trace.get("trace") or {}).get("resourceSpans", [])
+    spans = []
+    for batch in batches:
+        service = _attributes(batch.get("resource", {}).get("attributes")).get("service.name")
+        scopes = batch.get("scopeSpans") or batch.get("instrumentationLibrarySpans") or []
+        for scope in scopes:
+            for span in scope.get("spans", []):
+                start, end = int(span["startTimeUnixNano"]), int(span["endTimeUnixNano"])
+                spans.append(
+                    {
+                        "service": service,
+                        "name": span["name"],
+                        "span_id": _hex_id(span.get("spanId", "")),
+                        "parent_span_id": _hex_id(span.get("parentSpanId", "")),
+                        "kind": _kind(span.get("kind")),
+                        "duration_ms": (end - start) / 1e6,
+                        "status": _status(span.get("status")),
+                        "attributes": _attributes(span.get("attributes")),
+                        "events": [
+                            {"name": e["name"], "attributes": _attributes(e.get("attributes"))}
+                            for e in span.get("events", [])
+                        ],
+                    }
+                )
+    return spans
+
+
+def wait_traces(traceql: str, since_s: float = 300, timeout: float = 30, min_traces: int = 1):
+    """Wait until a TraceQL query finds at least ``min_traces`` traces; return them."""
+
+    def enough():
+        traces = tempo_search(traceql, since_s=since_s)
+        return traces if len(traces) >= min_traces else None
+
+    return wait_until(enough, timeout=timeout, interval=1, desc=f"traces {traceql}")

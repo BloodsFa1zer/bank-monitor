@@ -17,6 +17,14 @@ import sys
 import traceback
 from datetime import UTC, datetime
 
+try:
+    from bankmon_common.tracing import current_trace_ids
+except ImportError:  # OpenTelemetry is not installed: no trace ids in the log
+
+    def current_trace_ids() -> tuple[str, str] | None:
+        return None
+
+
 REQUIRED_FIELDS = ("ts", "level", "service", "logger", "event", "msg")
 
 _LEVEL_NUMBERS = {
@@ -58,6 +66,10 @@ class JsonFormatter(logging.Formatter):
             "event": getattr(record, _EVENT_ATTR, None) or "log",
             "msg": record.getMessage(),
         }
+        # Written inside a span: the ids link this line to its trace in Tempo (§6.11).
+        trace_ids = current_trace_ids()
+        if trace_ids:
+            payload["trace_id"], payload["span_id"] = trace_ids
         for key, value in getattr(record, _FIELDS_ATTR, {}).items():
             if key not in payload:  # extra fields never overwrite the required ones
                 payload[key] = value

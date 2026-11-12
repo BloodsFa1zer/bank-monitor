@@ -67,6 +67,7 @@ services:
       dockerfile: worker/Dockerfile
     environment:
       SERVICE_NAME: worker
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
       LOG_LEVEL: info
       DATABASE_URL: postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
       AMQP_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/%2F
@@ -96,6 +97,7 @@ services:
       dockerfile: generator/Dockerfile
     environment:
       SERVICE_NAME: generator
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
       LOG_LEVEL: info
       DATABASE_URL: postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
       MONITOR_DATABASE_URL: postgresql://${MONITOR_DB_USER}:${MONITOR_DB_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -128,6 +130,7 @@ services:
       dockerfile: auth/Dockerfile
     environment:
       SERVICE_NAME: auth
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo:4317
       LOG_LEVEL: info
       AUTH_DB_PATH: /data/auth.db
       AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:?}
@@ -219,6 +222,15 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - loki
+    restart: unless-stopped
+
+  # No healthcheck: the image has no shell or HTTP client (G2); the tests poll /ready.
+  tempo:
+    image: grafana/tempo:2.10.10
+    command: ["-config.file=/etc/tempo.yml"]
+    volumes:
+      - ./observability/tempo/tempo.yml:/etc/tempo.yml:ro
+      - tempo_data:/var/tempo
     restart: unless-stopped
 
   grafana:
@@ -343,6 +355,7 @@ services:
       PROM_URL: http://prometheus:9090
       GRAFANA_URL: http://grafana:3000/grafana
       LOKI_URL: http://loki:3100
+      TEMPO_URL: http://tempo:3200
     volumes:
       - .:/repo:ro
     working_dir: /repo
@@ -359,3 +372,4 @@ volumes:
   prom_data:
   grafana_data:
   loki_data:
+  tempo_data:

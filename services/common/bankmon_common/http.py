@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Histogram, generate_latest
 from starlette.routing import Match
 
+from bankmon_common import tracing
 from bankmon_common.metrics import DURATION_BUCKETS
 
 HTTP_REQUESTS = Counter(
@@ -43,7 +44,14 @@ def route_template(app: FastAPI, scope: dict) -> str:
 
 
 def instrument_app(app: FastAPI) -> None:
-    """Count and time every request except /metrics and /healthz."""
+    """Count and time every request except /metrics and /healthz; trace them if tracing is on.
+
+    Call after init_tracing.
+    """
+    if tracing.is_initialized():
+        from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+        FastAPIInstrumentor.instrument_app(app, excluded_urls="/metrics,/healthz")
 
     @app.middleware("http")
     async def measure(request: Request, call_next):
