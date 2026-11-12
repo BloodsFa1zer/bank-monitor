@@ -4,6 +4,7 @@ Waiting is done only by polling with a timeout (rule R12): this module is the
 only place in tests/ where time.sleep is allowed.
 """
 
+import json
 import os
 import time
 import uuid
@@ -11,6 +12,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pika
 import psycopg
@@ -84,21 +86,34 @@ _INVARIANTS = {
         WHERE total <> 0""",
     "I3 no negative balances": """
         SELECT id, balance FROM accounts WHERE balance < 0 ORDER BY id LIMIT 5""",
+    # The ledger is aggregated per transfer first and then joined: grouping the join
+    # by t.id instead made the planner pick a nested loop (transfers × ledger), which
+    # took minutes once the tables held a few hundred thousand rows.
     "I4 ledger entries match the transfer status": """
-        SELECT t.id, t.status, count(e.id) AS entries
+        SELECT t.id, t.status, COALESCE(p.entries, 0) AS entries
         FROM transfers t
-        LEFT JOIN ledger_entries e ON e.transfer_id = t.id
-        GROUP BY t.id
-        HAVING NOT (
+        LEFT JOIN (
+            SELECT transfer_id,
+                   count(*) AS entries,
+                   count(*) FILTER (WHERE kind = 'transfer_out') AS outs,
+                   count(*) FILTER (WHERE kind = 'transfer_in') AS ins,
+                   sum(delta) FILTER (WHERE kind = 'transfer_out') AS out_sum,
+                   sum(delta) FILTER (WHERE kind = 'transfer_in') AS in_sum,
+                   min(account_id) FILTER (WHERE kind = 'transfer_out') AS out_account,
+                   min(account_id) FILTER (WHERE kind = 'transfer_in') AS in_account
+            FROM ledger_entries
+            WHERE transfer_id IS NOT NULL
+            GROUP BY transfer_id
+        ) p ON p.transfer_id = t.id
+        -- COALESCE: a completed transfer without any entry makes the condition NULL,
+        -- and NOT NULL would hide it.
+        WHERE NOT COALESCE(
             (t.status = 'completed'
-             AND count(e.id) = 2
-             AND count(*) FILTER (WHERE e.kind = 'transfer_out'
-                                    AND e.account_id = t.from_account
-                                    AND e.delta = -t.amount) = 1
-             AND count(*) FILTER (WHERE e.kind = 'transfer_in'
-                                    AND e.account_id = t.to_account
-                                    AND e.delta = t.amount) = 1)
-            OR (t.status = 'failed' AND count(e.id) = 0))
+             AND p.entries = 2 AND p.outs = 1 AND p.ins = 1
+             AND p.out_sum = -t.amount AND p.in_sum = t.amount
+             AND p.out_account = t.from_account AND p.in_account = t.to_account)
+            OR (t.status = 'failed' AND p.transfer_id IS NULL),
+            false)
         LIMIT 5""",
 }
 
@@ -458,3 +473,42 @@ def wait_all_alerts_inactive(timeout: float = 240) -> None:
         interval=2,
         desc="every alert to be inactive",
     )
+
+
+# --- Grafana (S6) ------------------------------------------------------------
+
+GRAFANA_URL = os.environ.get("GRAFANA_URL", "http://grafana:3000/grafana")
+DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "observability" / "grafana" / "dashboards"
+
+
+def grafana_api(path: str, method: str = "GET", **kwargs) -> requests.Response:
+    """Grafana HTTP API as the internal administrator (only reachable inside the network)."""
+    auth = (os.environ["GF_SECURITY_ADMIN_USER"], os.environ["GF_SECURITY_ADMIN_PASSWORD"])
+    return requests.request(method, f"{GRAFANA_URL}/api/{path}", auth=auth, timeout=10, **kwargs)
+
+
+def dashboard_files() -> dict[str, dict]:
+    """{uid: dashboard JSON} of every provisioned dashboard file."""
+    dashboards = {}
+    for path in sorted(DASHBOARD_DIR.glob("*.json")):
+        dashboard = json.loads(path.read_text(encoding="utf-8"))
+        dashboards[dashboard["uid"]] = dashboard
+    return dashboards
+
+
+def panel_exprs(dashboard: dict) -> list[tuple[str, str, str]]:
+    """(panel title, data source uid, query) for every query of every panel.
+
+    Grafana variables are replaced by what Grafana itself would use for a
+    15-minute range, so the query can be sent to the data source directly.
+    """
+    replacements = {"$__rate_interval": "1m", "$__interval": "15s", "$__range": "15m"}
+    queries = []
+    for panel in dashboard["panels"]:
+        for target in panel.get("targets", []):
+            query = target.get("expr") or target.get("query") or ""
+            for variable, value in replacements.items():
+                query = query.replace(variable, value)
+            uid = (target.get("datasource") or panel.get("datasource") or {}).get("uid", "")
+            queries.append((panel["title"], uid, query))
+    return queries
