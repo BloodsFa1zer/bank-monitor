@@ -407,3 +407,54 @@ def token(username: str, password: str) -> str:
     response = gateway().post("/auth/token", json={"username": username, "password": password})
     response.raise_for_status()
     return response.json()["access_token"]
+
+
+# --- Prometheus (S5) ---------------------------------------------------------
+
+PROM_URL = os.environ.get("PROM_URL", "http://prometheus:9090")
+
+
+def prom_api(path: str, **params) -> dict | list:
+    """The `data` of a Prometheus HTTP API answer."""
+    response = requests.get(f"{PROM_URL}/api/v1/{path}", params=params, timeout=10)
+    response.raise_for_status()
+    body = response.json()
+    assert body["status"] == "success", body
+    return body["data"]
+
+
+def prom_query(expr: str, at: float | None = None) -> list[dict]:
+    params = {"query": expr}
+    if at is not None:
+        params["time"] = at
+    return prom_api("query", **params)["result"]
+
+
+def prom_value(expr: str) -> float | None:
+    """The value of the first series of an instant query, or None if there is none."""
+    result = prom_query(expr)
+    return float(result[0]["value"][1]) if result else None
+
+
+def alert_states() -> dict[str, str]:
+    """{alert name: "inactive" | "pending" | "firing"} for every alerting rule."""
+    groups = prom_api("rules", type="alert")["groups"]
+    return {rule["name"]: rule["state"] for group in groups for rule in group["rules"]}
+
+
+def wait_alert(name: str, state: str, timeout: float) -> None:
+    wait_until(
+        lambda: alert_states()[name] == state,
+        timeout=timeout,
+        interval=2,
+        desc=f"alert {name} to become {state}",
+    )
+
+
+def wait_all_alerts_inactive(timeout: float = 240) -> None:
+    wait_until(
+        lambda: set(alert_states().values()) == {"inactive"},
+        timeout=timeout,
+        interval=2,
+        desc="every alert to be inactive",
+    )
